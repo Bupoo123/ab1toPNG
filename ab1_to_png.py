@@ -5,6 +5,9 @@ import os
 import argparse
 from pathlib import Path
 from Bio import SeqIO
+# 设置 matplotlib 使用非交互式后端（避免在服务器环境中崩溃）
+import matplotlib
+matplotlib.use('Agg')  # 使用非交互式后端
 import matplotlib.pyplot as plt
 
 def parse_ab1_traces(ab1_path):

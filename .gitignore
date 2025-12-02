@@ -32,9 +32,12 @@ wheels/
 
 # 输出文件
 png_output/
+output/
+uploads/
 *.png
 *.ab1
 *.abi
+*.zip
 
 # macOS
 .DS_Store
