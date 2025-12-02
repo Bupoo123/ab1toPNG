@@ -4,7 +4,8 @@
 import os
 import argparse
 from pathlib import Path
-from Bio import SeqIO
+
+from abifpy import Trace
 # 设置 matplotlib 使用非交互式后端（避免在服务器环境中崩溃）
 import matplotlib
 matplotlib.use('Agg')  # 使用非交互式后端
@@ -17,46 +18,147 @@ def parse_ab1_traces(ab1_path):
     - seq:    碱基序列（str）
     - base_calls: 碱基序列字符串
     - base_positions: 每个碱基在色谱上的位置（list[int]），可能为 None
+
+    使用 abifpy 库解析 ab1 文件，如果解析失败会直接抛出异常。
     """
-    record = SeqIO.read(str(ab1_path), "abi")
-    abif = record.annotations["abif_raw"]
+    # 使用 abifpy 解析 ab1 文件
+    try:
+        reader = Trace(str(ab1_path))
+    except Exception as e:
+        raise ValueError(f"无法打开 ab1 文件: {str(e)}")
     
-    # 序列
-    seq = str(record.seq)
+    try:
+        # 检查 reader 是否有 tags 属性
+        if not hasattr(reader, 'tags'):
+            raise ValueError("ab1 文件格式不正确：缺少 tags 数据")
+        
+        # 获取序列（PBAS2 优先，没有就退回 PBAS1）
+        seq_bytes = None
+        try:
+            if "PBAS2" in reader.tags:
+                seq_bytes = reader.get_data("PBAS2")
+        except (KeyError, AttributeError, TypeError, NameError):
+            pass
+        
+        if seq_bytes is None:
+            try:
+                if "PBAS1" in reader.tags:
+                    seq_bytes = reader.get_data("PBAS1")
+            except (KeyError, AttributeError, TypeError, NameError):
+                pass
+        
+        if seq_bytes is None:
+            raise ValueError("无法从 ab1 文件中获取序列数据（PBAS2 和 PBAS1 都不存在）")
+        
+        if isinstance(seq_bytes, bytes):
+            seq = seq_bytes.decode(errors="ignore")
+        else:
+            seq = str(seq_bytes)
+        
+        base_calls = seq
+        
+        # 获取碱基位置（PLOC2）
+        base_positions = None
+        try:
+            if "PLOC2" in reader.tags:
+                base_positions = reader.get_data("PLOC2")
+                if base_positions is not None:
+                    base_positions = list(base_positions)
+        except (KeyError, AttributeError, TypeError, NameError):
+            base_positions = None
+        
+        # 获取通道顺序 FWO_（比如 b"GATC"）
+        fwo = None
+        try:
+            if "FWO_" in reader.tags:
+                fwo = reader.get_data("FWO_")
+        except (KeyError, AttributeError, TypeError, NameError):
+            fwo = None
+        
+        if fwo is None:
+            # 极少数情况下没有 FWO_，使用默认顺序
+            channel_order = ["G", "A", "T", "C"]
+        else:
+            if isinstance(fwo, bytes):
+                fwo = fwo.decode(errors="ignore")
+            channel_order = [b for b in fwo if b in "ACGT"]
+            if not channel_order:
+                channel_order = ["G", "A", "T", "C"]
+        
+        # 获取 DATA 通道数据（DATA9, DATA10, DATA11, DATA12）
+        # 根据通道顺序映射到对应的碱基
+        data_channels = {
+            "DATA9": None,
+            "DATA10": None,
+            "DATA11": None,
+            "DATA12": None
+        }
+        
+        for key in data_channels.keys():
+            try:
+                if key in reader.tags:
+                    data_channels[key] = reader.get_data(key)
+                    if data_channels[key] is None:
+                        raise ValueError(f"无法从 ab1 文件中获取 {key} 数据")
+                else:
+                    raise ValueError(f"ab1 文件中不存在 {key} 标签")
+            except (KeyError, AttributeError, TypeError, NameError) as e:
+                raise ValueError(f"无法从 ab1 文件中获取 {key} 数据: {str(e)}")
+        
+        # 将 DATA 通道映射到对应的碱基
+        traces = {}
+        data_keys = ["DATA9", "DATA10", "DATA11", "DATA12"]
+        for base, key in zip(channel_order, data_keys[:4]):
+            traces[base] = data_channels[key]
+        
+        return traces, seq, base_calls, base_positions
+    finally:
+        # 确保关闭 reader
+        try:
+            reader.close()
+        except:
+            pass
     
-    # base calls （PBAS2 优先，没有就退回 PBAS1）
-    base_calls = abif.get("PBAS2") or abif.get("PBAS1")
-    if isinstance(base_calls, bytes):
-        base_calls = base_calls.decode(errors="ignore")
-    
-    # 每个 base 在 trace 上的位置（可选）
-    base_positions = abif.get("PLOC2")
-    # 有些机器可能没有 PLOC2，这种情况就留 None
-    if base_positions is not None:
-        base_positions = list(base_positions)
-    
-    # 通道顺序 FWO_（比如 b"GATC"）
-    fwo = abif.get("FWO_")  # forward order
-    if fwo is None:
-        # 极少数情况下没有 FWO_，这里可以设一个默认顺序
-        channel_order = ["G", "A", "T", "C"]
-    else:
-        if isinstance(fwo, bytes):
-            fwo = fwo.decode(errors="ignore")
-        channel_order = [b for b in fwo if b in "ACGT"]
-    
-    # 找出所有 DATA 通道并按编号排序（DATA9, DATA10, DATA11, DATA12）
-    data_keys = sorted(
-        [k for k in abif.keys() if k.startswith("DATA")],
-        key=lambda x: int(x[4:])
-    )
-    
-    # 取前四个通道映射到 A/C/G/T（通常就是 4 条峰图）
+    # 将 DATA 通道映射到对应的碱基
     traces = {}
+    data_keys = ["DATA9", "DATA10", "DATA11", "DATA12"]
     for base, key in zip(channel_order, data_keys[:4]):
-        traces[base] = abif[key]
+        traces[base] = data_channels[key]
     
+    reader.close()
     return traces, seq, base_calls, base_positions
+
+def _guess_window_from_signal(traces, threshold_ratio=0.01, padding=100):
+    """
+    根据信号强度估计应该展示的区间。
+
+    - 将四个通道求和，找到信号占比超过 threshold_ratio * max_intensity 的位置
+    - 返回 (start, end) 供 x 轴范围使用，如果无法判断则返回 (0, length-1)
+    """
+    import numpy as np
+    example_base = next(iter(traces))
+    length = len(traces[example_base])
+
+    # 合并四条曲线，避免某一通道过低导致误判
+    merged = None
+    for trace in traces.values():
+        if merged is None:
+            merged = np.array(trace, dtype=float)
+        else:
+            merged = merged + np.array(trace, dtype=float)
+
+    max_intensity = merged.max() if merged is not None else 0
+    if max_intensity <= 0:
+        return 0, length - 1
+
+    mask = merged >= max_intensity * threshold_ratio
+    if not mask.any():
+        return 0, length - 1
+
+    indices = np.nonzero(mask)[0]
+    start = max(int(indices.min()) - padding, 0)
+    end = min(int(indices.max()) + padding, length - 1)
+    return start, end
 
 def plot_chromatogram(traces, seq, base_calls, base_positions,
                       title, out_path, dpi=200, width=16, height=4):
@@ -82,10 +184,18 @@ def plot_chromatogram(traces, seq, base_calls, base_positions,
         color = base_colors.get(base, None)
         plt.plot(x, trace, label=base, color=color, linewidth=0.5)
     
+    # 计算可视化范围，避免色谱尾部长串 0 造成横轴过长
+    if base_positions:
+        start = max(min(base_positions) - 100, 0)
+        end = min(max(base_positions) + 100, length - 1)
+    else:
+        start, end = _guess_window_from_signal(traces)
+    
     plt.xlabel("Trace index")
     plt.ylabel("Signal intensity")
     plt.title(title)
     plt.legend(loc="upper right")
+    plt.xlim(start, end)
     
     # 可选：在碱基位置上画竖线，并标注 base_calls
     # 如果你觉得太乱，可以把这一段注释掉
@@ -109,6 +219,7 @@ def process_single_file(ab1_path, out_dir, dpi=200, log_callback=None):
     """
     处理单个 ab1 文件
     log_callback: 可选的日志回调函数，接受一个字符串参数
+    返回: (success: bool, error_message: str)
     """
     ab1_path = Path(ab1_path)
     out_dir = Path(out_dir)
@@ -136,10 +247,14 @@ def process_single_file(ab1_path, out_dir, dpi=200, log_callback=None):
             dpi=dpi
         )
         log(f"[OK] {ab1_path} -> {out_path}")
-        return True
+        return True, None
     except Exception as e:
-        log(f"[ERROR] 处理 {ab1_path} 时出错: {e}")
-        return False
+        import traceback
+        error_detail = str(e)
+        error_trace = traceback.format_exc()
+        log(f"[ERROR] 处理 {ab1_path} 时出错: {error_detail}")
+        log(f"[ERROR] 详细错误: {error_trace}")
+        return False, error_detail
 
 def process_path(input_path, out_dir, dpi=200):
     input_path = Path(input_path)

@@ -93,7 +93,7 @@ def upload_file():
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], 
                                    Path(filename).with_suffix('.png').name)
         
-        success = process_single_file(filepath, app.config['OUTPUT_FOLDER'], dpi=dpi, log_callback=None)
+        success, error_msg = process_single_file(filepath, app.config['OUTPUT_FOLDER'], dpi=dpi, log_callback=None)
         
         if success:
             return jsonify({
@@ -103,7 +103,10 @@ def upload_file():
                 'download_url': f'/api/download/{Path(filename).with_suffix(".png").name}'
             })
         else:
-            return jsonify({'error': '文件转换失败'}), 500
+            return jsonify({
+                'error': '文件转换失败',
+                'detail': error_msg or '未知错误'
+            }), 500
             
     except Exception as e:
         import traceback
@@ -155,7 +158,7 @@ def upload_batch():
                     output_name = Path(filename).with_suffix('.png').name
                     output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
                     
-                    success = process_single_file(filepath, app.config['OUTPUT_FOLDER'], dpi=dpi, log_callback=None)
+                    success, error_msg = process_single_file(filepath, app.config['OUTPUT_FOLDER'], dpi=dpi, log_callback=None)
                     
                     if success:
                         results.append({
@@ -169,7 +172,7 @@ def upload_batch():
                         results.append({
                             'filename': filename,
                             'success': False,
-                            'error': '转换失败'
+                            'error': error_msg or '转换失败'
                         })
                         
                 except Exception as e:
